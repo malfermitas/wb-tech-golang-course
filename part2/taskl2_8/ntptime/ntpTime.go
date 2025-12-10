@@ -46,5 +46,5 @@ func GetTime(address string, format string) (NTPTime, error) {
 		log.Printf("Failed to reach %s: %v", server, err)
 	}
 
-	return NTPTime{}, errors.New("Failed to get time")
+	return NTPTime{}, errors.New("failed to get time")
 }
