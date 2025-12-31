@@ -3,12 +3,6 @@ package interfaces
 import (
 	"calendar_app/internal/entity"
 	"calendar_app/internal/entity/value_objects"
-	"errors"
-)
-
-var (
-	ErrEventNotFound = errors.New("event not found")
-	ErrEventConflict = errors.New("event already exists")
 )
 
 type EventRepository interface {
