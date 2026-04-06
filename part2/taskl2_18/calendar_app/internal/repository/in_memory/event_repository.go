@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+var (
+	ErrEventNotFound = errors.New("event not found")
+	ErrEventConflict = errors.New("event already exists")
+)
+
 type EventRepository struct {
 	events map[string]*entity.Event
 	mu     sync.RWMutex
@@ -26,7 +31,7 @@ func (r *EventRepository) Create(event *entity.Event) error {
 
 	// Проверяем уникальность по ID
 	if _, exists := r.events[event.ID.String()]; exists {
-		return interfaces.ErrEventConflict
+		return ErrEventConflict
 	}
 
 	r.events[event.ID.String()] = event
@@ -38,7 +43,7 @@ func (r *EventRepository) Update(event *entity.Event) error {
 	defer r.mu.Unlock()
 
 	if _, exists := r.events[event.ID.String()]; !exists {
-		return interfaces.ErrEventNotFound
+		return ErrEventNotFound
 	}
 
 	event.UpdatedAt = time.Now()
@@ -51,7 +56,7 @@ func (r *EventRepository) Delete(id string) error {
 	defer r.mu.Unlock()
 
 	if _, exists := r.events[id]; !exists {
-		return interfaces.ErrEventNotFound
+		return ErrEventNotFound
 	}
 
 	delete(r.events, id)
@@ -64,7 +69,7 @@ func (r *EventRepository) FindByID(id string) (*entity.Event, error) {
 
 	event, exists := r.events[id]
 	if !exists {
-		return nil, interfaces.ErrEventNotFound
+		return nil, ErrEventNotFound
 	}
 
 	return event, nil
