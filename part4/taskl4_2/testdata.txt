@@ -1,0 +1,15 @@
+line1: this is an error message
+line2: normal log entry
+line3: ERROR: critical failure
+line4: debug information
+line5: error in configuration
+line6: info message
+line7: warning: something went wrong
+line8: another error here
+line9: success completed
+line10: ERROR detected
+line11: just some text
+line12: error log 123
+line13: trace output
+line14: fatal exception
+line15: normal operation

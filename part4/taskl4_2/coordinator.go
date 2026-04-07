@@ -1,4 +1,4 @@
-package taskl4_2
+package main
 
 import (
 	"bufio"
@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -24,14 +23,31 @@ var (
 	patternFlag     = pflag.String("pattern", "", "regex pattern to search for")
 	serversListFlag = pflag.StringSlice("servers", nil, "list of servers")
 	quorumFlag      = pflag.Int("quorum", 0, "number of quorum nodes (n+2/1 by default)")
-	chunkSize       = flag.Int("chunksize", 1024, "size of each chunk")
-	filePath        = flag.String("file", "", "file path (stdin is read if not specified)")
+	chunkSize       = pflag.Int("chunksize", 1024, "size of each chunk")
+	filePath        = pflag.String("file", "", "file path (stdin is read if not specified)")
+	coordinatorPort = pflag.String("port", ":6000", "coordinator listen port for callbacks")
+	ignoreCaseFlag  = pflag.Bool("i", false, "Ignore case")
+	inverseFlag     = pflag.Bool("v", false, "Invert match")
+	countFlag       = pflag.Bool("c", false, "Count only")
+	fixedStringFlag = pflag.Bool("F", false, "Interpret pattern as fixed string")
+	beforeFlag      = pflag.Int("B", 0, "Number of context lines before")
+	afterFlag       = pflag.Int("A", 0, "Number of context lines after")
+	contextFlag     = pflag.Int("C", 0, "Number of context lines around")
 )
 
 type processRequest struct {
-	ID      string `json:"id"`
-	Data    string `json:"data"`
-	Pattern string `json:"pattern"`
+	ID       string `json:"id"`
+	Data     string `json:"data"`
+	Pattern  string `json:"pattern"`
+	Callback string `json:"callback,omitempty"`
+	// Добавляем флаги для передачи воркеру
+	IgnoreCase  bool `json:"ignore_case"`
+	Inverse     bool `json:"inverse"`
+	CountOnly   bool `json:"count_only"`
+	FixedString bool `json:"fixed_string"`
+	Before      int  `json:"before"`
+	After       int  `json:"after"`
+	Context     int  `json:"context"`
 }
 
 type processResponse struct {
@@ -45,7 +61,7 @@ type chunkTask struct {
 	data string
 }
 
-func launchWorkerClient(ctx context.Context, servers []string, dispatched *int32) chan<- chunkTask {
+func launchWorkerClient(ctx context.Context, servers []string, dispatched *int32, callbackURL string) chan<- chunkTask {
 	chunkChan := make(chan chunkTask, 10)
 	serverChannels := make([]chan chunkTask, len(servers), len(servers))
 
@@ -55,23 +71,35 @@ func launchWorkerClient(ctx context.Context, servers []string, dispatched *int32
 			client := http.Client{Timeout: time.Second * 10}
 			for {
 				select {
-				case chunk, _ := <-serverChannel:
+				case chunk, ok := <-serverChannel:
+					if !ok {
+						return
+					}
 					request := processRequest{
-						ID:      fmt.Sprintf("chunk-%d", chunk.seq),
-						Data:    chunk.data,
-						Pattern: *patternFlag,
+						ID:          fmt.Sprintf("chunk-%d", chunk.seq),
+						Data:        chunk.data,
+						Pattern:     *patternFlag,
+						Callback:    callbackURL,
+						IgnoreCase:  *ignoreCaseFlag,
+						Inverse:     *inverseFlag,
+						CountOnly:   *countFlag,
+						FixedString: *fixedStringFlag,
+						Before:      *beforeFlag,
+						After:       *afterFlag,
+						Context:     *contextFlag,
 					}
 					requestJson, _ := json.Marshal(request)
-					resp, err := client.Post(serverURL, "application/json", bytes.NewBuffer(requestJson))
+					resp, err := client.Post(serverURL+"/process", "application/json", bytes.NewBuffer(requestJson))
 					if err != nil {
 						log.Printf("Error posting to %s: %s", serverURL, err)
+						continue
 					}
 					log.Printf("Posted to %s", serverURL)
-					resp.Body.Close()
-
-					if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-						atomic.AddInt32(dispatched, 1)
+					if resp != nil && resp.Body != nil {
+						resp.Body.Close()
 					}
+
+					atomic.AddInt32(dispatched, 1)
 					log.Printf("Task %d accepted by %s", chunk.seq, serverURL)
 				case <-ctx.Done():
 					client.CloseIdleConnections()
@@ -84,7 +112,13 @@ func launchWorkerClient(ctx context.Context, servers []string, dispatched *int32
 	go func() {
 		for {
 			select {
-			case chunk := <-chunkChan:
+			case chunk, ok := <-chunkChan:
+				if !ok {
+					for n := range serverChannels {
+						close(serverChannels[n])
+					}
+					return
+				}
 				serverChannels[chunk.seq%len(serverChannels)] <- chunk
 			case <-ctx.Done():
 				return
@@ -103,7 +137,7 @@ type processResponseResult struct {
 func launchWorkerServer(ctx context.Context, success *int32) <-chan processResponseResult {
 	responseChan := make(chan processResponseResult, 10)
 	mux := http.NewServeMux()
-	server := http.Server{Addr: ":6000", Handler: mux}
+	server := http.Server{Addr: *coordinatorPort, Handler: mux}
 
 	go func() {
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -152,7 +186,7 @@ func main() {
 		*chunkSize = 1000
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGKILL)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	ctxTimeout, _ := context.WithTimeout(ctx, 1*time.Minute)
 	defer stop()
 
@@ -186,16 +220,18 @@ func main() {
 					log.Printf("error reading response: %v", response.Err)
 				}
 				allMatches = append(allMatches, response.Value.Matches...)
-				atomic.AddInt32(&success, 1)
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
 
-	requestChan := launchWorkerClient(ctx, *serversListFlag, &dispatched)
+	requestChan := launchWorkerClient(ctx, *serversListFlag, &dispatched, "http://localhost"+*coordinatorPort)
 	scanner := bufio.NewScanner(input)
 	lines := make([]string, 0, *chunkSize)
 	seq := 0
 	go func() {
+		defer close(requestChan)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if strings.TrimSpace(line) == "" {
@@ -204,28 +240,35 @@ func main() {
 			lines = append(lines, line)
 
 			if len(lines) >= *chunkSize {
+				chunkLines := make([]string, len(lines))
+				copy(chunkLines, lines)
 				requestChan <- chunkTask{
 					seq:  seq,
-					data: strings.Join(lines, "\n"),
+					data: strings.Join(chunkLines, "\n"),
 				}
 				seq++
-				lines = lines[:0]
-				atomic.AddInt32(&dispatched, 1)
+				lines = make([]string, 0, *chunkSize)
 			}
 		}
-		close(requestChan)
+		if len(lines) > 0 {
+			requestChan <- chunkTask{
+				seq:  seq,
+				data: strings.Join(lines, "\n"),
+			}
+		}
 	}()
 
 	finished := false
 	for !finished {
 		select {
 		case <-ctxTimeout.Done():
+			finished = true
 		case <-ctx.Done():
 			finished = true
 		default:
 			sent := atomic.LoadInt32(&dispatched)
 			recv := atomic.LoadInt32(&success)
-			if sent > 0 && recv >= sent {
+			if sent > 0 && recv == sent {
 				finished = true
 			} else {
 				time.Sleep(50 * time.Millisecond)
