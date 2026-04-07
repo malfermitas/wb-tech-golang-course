@@ -31,6 +31,14 @@ var (
 func searchInReader(reader *bufio.Reader, pattern string) ([]Line, error) {
 	var patternRegularExpression *regexp.Regexp
 	var regexpError error
+	addLineIfMissing := func(lines []Line, line Line) []Line {
+		for _, addedLine := range lines {
+			if addedLine.lineNumber == line.lineNumber {
+				return lines
+			}
+		}
+		return append(lines, line)
+	}
 
 	if *fixedStringFlag {
 		// Если флаг -F установлен, интерпретируем как фиксированную строку
@@ -56,6 +64,7 @@ func searchInReader(reader *bufio.Reader, pattern string) ([]Line, error) {
 	resultingLines := make([]Line, 0)
 
 	linesBuffer := make([]Line, 0)
+	afterLinesRemaining := 0
 
 	lineNumber := 1
 
@@ -93,34 +102,22 @@ func searchInReader(reader *bufio.Reader, pattern string) ([]Line, error) {
 				}
 
 				for i := startIndex; i < len(linesBuffer)-1; i++ {
-					alreadyAdded := false
-					for _, addedLine := range resultingLines {
-						if addedLine.lineNumber == linesBuffer[i].lineNumber {
-							alreadyAdded = true
-							break
-						}
-					}
-					if !alreadyAdded {
-						resultingLines = append(resultingLines, linesBuffer[i])
-					}
+					resultingLines = addLineIfMissing(resultingLines, linesBuffer[i])
 				}
 
-				resultingLines = append(resultingLines, linesBuffer[len(linesBuffer)-1])
+				resultingLines = addLineIfMissing(resultingLines, linesBuffer[len(linesBuffer)-1])
 
 				afterLines := *afterFlag
 				if *contextFlag > 0 {
 					afterLines = *contextFlag
 				}
-
-				for i := 0; i < afterLines; i++ {
-					if !scanner.Scan() {
-						break
-					}
-					lineNumber++
-					nextLine := scanner.Text()
-					resultingLines = append(resultingLines, Line{lineNumber: lineNumber, lineText: nextLine})
+				if afterLines > afterLinesRemaining {
+					afterLinesRemaining = afterLines
 				}
 			}
+		} else if !*countFlag && afterLinesRemaining > 0 {
+			resultingLines = addLineIfMissing(resultingLines, Line{lineNumber: lineNumber, lineText: originalLine})
+			afterLinesRemaining--
 		}
 
 		contextSize := *beforeFlag
